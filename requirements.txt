@@ -1,0 +1,5 @@
+loguru
+numpy
+scipy
+tqdm
+requests
