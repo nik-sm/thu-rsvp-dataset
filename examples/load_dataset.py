@@ -1,6 +1,6 @@
 from pathlib import Path
-from thu_rsvp_dataset import THU_RSVP_Dataset, get_default_transform
 
+from thu_rsvp_dataset import THU_RSVP_Dataset, get_default_transform
 
 # Specify location to store files (or location of previously downloaded files)
 datasets_dir = Path(__file__).resolve().parent.parent / "datasets"

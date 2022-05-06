@@ -9,8 +9,13 @@ import numpy as np
 from loguru import logger
 from tqdm import tqdm
 
+from .files import (
+    ALL_FILES_AND_SHA256SUMS,
+    SOURCE_URL,
+    WHICH_FOLDER_EACH_SUBJECT,
+    ZIP_FILES_AND_SHA256SUMS,
+)
 from .utils import download_url, file_sha256hash, verify_file
-from .files import SOURCE_URL, ZIP_FILES_AND_SHA256SUMS, ALL_FILES_AND_SHA256SUMS, WHICH_FOLDER_EACH_SUBJECT
 from .worker import load_trials_one_session
 
 
