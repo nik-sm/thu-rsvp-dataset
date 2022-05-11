@@ -1,12 +1,12 @@
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 from scipy.io import loadmat
 
 
 def load_trials_one_session(
-    mat_file: Path,
+    matfile_subj_sess: Tuple[Path, int, int],
     channels_to_use: np.ndarray,
     original_sample_rate_hz: int,
     trial_duration_samples: int,
@@ -16,6 +16,7 @@ def load_trials_one_session(
     Worker function for multiprocess data loading.
     Each session is stored in a mat file. It consists of 2 blocks of 40 sequences.
     """
+    mat_file, subj_id, sess_id = matfile_subj_sess
     trial_data, trial_labels = [], []
     contents = loadmat(mat_file)
 
@@ -45,4 +46,6 @@ def load_trials_one_session(
             converted_onset = int(trial_onset // downsample_factor)
             trial_data.append(data[..., converted_onset : converted_onset + trial_duration_samples])
             trial_labels.append(labels[i])
-    return trial_data, trial_labels
+    subj_id = subj_id * np.ones_like(trial_labels)
+    sess_id = sess_id * np.ones_like(trial_labels)
+    return trial_data, trial_labels, subj_id, sess_id

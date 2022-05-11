@@ -29,10 +29,10 @@ thu_rsvp = THU_RSVP_Dataset(
     trial_duration_ms=500,
     transform=transform,
     download=True,
-    verify_sha256=False,
+    verify_sha256=True,
     verbose=True,
     force_extract=False,  # NOTE - set this to true after changing transforms
 )
-data, labels = thu_rsvp.get_data()
+data, labels, subj_id, sess_id = thu_rsvp.get_data()
 
-print(data.shape, labels.shape)
+print(data.shape, labels.shape, subj_id.shape, sess_id.shape)

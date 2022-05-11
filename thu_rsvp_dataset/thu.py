@@ -71,6 +71,18 @@ class THU_RSVP_Dataset:
         self.trial_duration_samples = self.output_shape[-1]
 
     def get_data(self):
+        """
+        Fetch trial data from THU RSVP Dataset.
+
+        Returns:
+            data (np.ndarray): shape (n_trials, n_channels, trial_duration_samples)
+                NOTE - the shape of returned data depends on the transformation function used.
+                For example - downsampling will reduce the duration of each trial, and time-frequency
+                transformations may add an extra dimension.
+            labels (np.ndarray): shape (n_trials,)
+            subject_ids (np.ndarray): shape (n_trials,)
+            session_ids (np.ndarray): shape (n_trials,)
+        """
         if self.verbose:
             logger.info("Check download...")
         self._check_download()
@@ -79,8 +91,8 @@ class THU_RSVP_Dataset:
         self._decompress()
         if self.verbose:
             logger.info("Extract trials...")
-        self.data, self.labels = self._extract_trials()
-        return self.data, self.labels
+        self.data, self.labels, self.subj_id, self.sess_id = self._extract_trials()
+        return self.data, self.labels, self.subj_id, self.sess_id
 
     def _check_download(self) -> None:
         if self.download:
@@ -113,8 +125,10 @@ class THU_RSVP_Dataset:
                     logger.info(f"Decompressing {inpath} to {outpath}")
                 subprocess.run(f"unzip -o -q {str(inpath)} -d {str(outpath)}", shell=True, check=True)
 
-    def _extract_trials(self) -> Tuple[np.ndarray, np.ndarray]:
+    def _extract_trials(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
+        Returns data, labels, subj_id, sess_id
+
         NOTE - File layout is as follows
 
             self.dir/
@@ -149,40 +163,58 @@ class THU_RSVP_Dataset:
         """
         trial_data_path = self.dir / f"trial_data.{self.trial_duration_ms}ms.npy"
         trial_data_sha256_path = self.dir / f"trial_data.{self.trial_duration_ms}ms.sha256"
+
+        subj_id_path = self.dir / f"subj_id.{self.trial_duration_ms}ms.npy"
+        subj_id_sha256_path = self.dir / f"subj_id.{self.trial_duration_ms}ms.sha256"
+
+        sess_id_path = self.dir / f"sess_id.{self.trial_duration_ms}ms.npy"
+        sess_id_sha256_path = self.dir / f"sess_id.{self.trial_duration_ms}ms.sha256"
+
         trial_labels_path = self.dir / f"trial_labels.{self.trial_duration_ms}ms.npy"
         trial_labels_sha256_path = self.dir / f"trial_labels.{self.trial_duration_ms}ms.sha256"
 
         def can_reuse():
-            if not trial_data_sha256_path.exists() or not trial_labels_sha256_path.exists():
+            if self.verbose:
+                logger.info("Checking if can reuse...")
+            for item, shasum in [
+                (trial_data_path, trial_data_sha256_path),
+                (subj_id_path, subj_id_sha256_path),
+                (sess_id_path, sess_id_sha256_path),
+                (trial_labels_path, trial_labels_sha256_path),
+            ]:
                 if self.verbose:
-                    logger.info("Cannot reuse trial data, because one or more files are missing.")
-                return False
-            if not verify_file(trial_data_path, trial_data_sha256_path.read_text(), verify_sha256=self.verify_sha256):
-                if self.verbose:
-                    logger.info("Cannot reuse trial data, because data file checksum fails.")
-                return False
-            if not verify_file(
-                trial_labels_path, trial_labels_sha256_path.read_text(), verify_sha256=self.verify_sha256
-            ):
-                if self.verbose:
-                    logger.info("Cannot reuse trial data, because label file checksum fails.")
-                return False
+                    logger.info(f"Checking {str(item)}...")
+                if not item.exists():
+                    if self.verbose:
+                        logger.info(f"Cannot reuse data, missing file: {item}")
+                    return False
+                if not shasum.exists():
+                    if self.verbose:
+                        logger.info(f"Cannot reuse data, missing file: {shasum}")
+                    return False
+                if not verify_file(item, shasum.read_text(), verify_sha256=self.verify_sha256):
+                    if self.verbose:
+                        logger.info(f"Cannot reuse data, checksum mismatch: {item}")
+                    return False
             return True
 
         if not self.force_extract and can_reuse():  # Try to use pre-existing files if possible
             if self.verbose:
                 logger.info(f"Loading previously extracted data and labels. verified checksum: {self.verify_sha256}.")
-            return np.load(trial_data_path), np.load(trial_labels_path)
+            return np.load(trial_data_path), np.load(trial_labels_path), np.load(subj_id_path), np.load(sess_id_path)
 
-        mat_files = [
-            self.dir / WHICH_FOLDER_EACH_SUBJECT[subj_idx] / f"sub{subj_idx}{session}.mat"
+        # list of (filepath, subj_id, sess_id)
+        mat_files_subj_sess = [
+            (self.dir / WHICH_FOLDER_EACH_SUBJECT[subj_idx] / f"sub{subj_idx}{session}.mat", subj_idx, sess_id)
             for subj_idx in range(1, 65)
-            for session in ["A", "B"]
+            for sess_id, session in [(0, "A"), (1, "B")]
         ]
 
         # Assign trials and labels directly into arrays to avoid memory overhead.
         data = np.empty(shape=(self.n_trials, *self.output_shape), dtype=np.float32)
         labels = np.empty(shape=(self.n_trials,), dtype=int)
+        subj_id = np.empty(shape=(self.n_trials,), dtype=int)
+        sess_id = np.empty(shape=(self.n_trials,), dtype=int)
 
         n_processes = int(multiprocessing.cpu_count() / 2 * 3)  # All processes reading *.mat files - probably IO bound
         with Pool(n_processes) as pool:
@@ -194,16 +226,18 @@ class THU_RSVP_Dataset:
                 transform=self.transform,
             )
             cursor = 0
-            for subject_trial_data, subject_trial_labels in tqdm(
+            for one_data, one_labels, one_subj_id, one_sess_id in tqdm(
                 # use imap to get partial results as they become available (trying to avoid memory overhead)
-                pool.imap(worker_fn, mat_files, chunksize=1),
+                pool.imap(worker_fn, mat_files_subj_sess, chunksize=1),
                 desc="Extract Trials",
-                total=len(mat_files),
+                total=len(mat_files_subj_sess),
                 leave=True,
             ):
-                data[cursor : cursor + len(subject_trial_data)] = subject_trial_data
-                labels[cursor : cursor + len(subject_trial_labels)] = subject_trial_labels
-                cursor += len(subject_trial_data)
+                data[cursor : cursor + len(one_data)] = one_data
+                labels[cursor : cursor + len(one_labels)] = one_labels
+                subj_id[cursor : cursor + len(one_subj_id)] = one_subj_id
+                sess_id[cursor : cursor + len(one_sess_id)] = one_sess_id
+                cursor += len(one_data)
 
         # Save data and SHA256 checksum
         if self.verbose:
@@ -213,6 +247,22 @@ class THU_RSVP_Dataset:
             logger.info(f"Saving {trial_data_sha256_path}")
         trial_data_sha256_path.write_text(file_sha256hash(trial_data_path))
 
+        # Save subj id and SHA256 checksum
+        if self.verbose:
+            logger.info(f"Saving {subj_id_path}")
+        np.save(subj_id_path, subj_id)
+        if self.verbose:
+            logger.info(f"Saving {subj_id_sha256_path}")
+        subj_id_sha256_path.write_text(file_sha256hash(subj_id_path))
+
+        # Save sess id and SHA256 checksum
+        if self.verbose:
+            logger.info(f"Saving {sess_id_path}")
+        np.save(sess_id_path, sess_id)
+        if self.verbose:
+            logger.info(f"Saving {sess_id_sha256_path}")
+        sess_id_sha256_path.write_text(file_sha256hash(sess_id_path))
+
         # Save labels and SHA256 checksum
         if self.verbose:
             logger.info(f"Saving {trial_labels_path}")
@@ -220,4 +270,4 @@ class THU_RSVP_Dataset:
         if self.verbose:
             logger.info(f"Saving {trial_labels_sha256_path}")
         trial_labels_sha256_path.write_text(file_sha256hash(trial_labels_path))
-        return data, labels
+        return data, labels, subj_id, sess_id
